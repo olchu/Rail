@@ -68,6 +68,10 @@ final class WindowStore {
     /// Window numbers already scanned for. Not every window-server window is a real window,
     /// and those must not trigger a new scan on every refresh.
     @ObservationIgnored private var scanned: Set<CGWindowID> = []
+    /// Whether each app is a browser, by bundle ID; the Launch Services lookup is not free.
+    @ObservationIgnored private var browsers: [String: Bool] = [:]
+    /// Browsers already asked to build their accessibility tree.
+    @ObservationIgnored private var revealed: Set<pid_t> = []
 
     init(projects: ProjectStore) {
         self.projects = projects
@@ -119,6 +123,7 @@ final class WindowStore {
         let live = Set(serverWindows.values.joined())
         offSpace = offSpace.filter { live.contains($0.key) }
         scanned.formIntersection(live)
+        revealed.formIntersection(running.map(\.processIdentifier))
     }
 
     func focus(_ window: WindowItem) {
@@ -154,9 +159,18 @@ final class WindowStore {
         var elements: [AXUIElement] = axApp.value(kAXWindowsAttribute) ?? []
         elements.append(contentsOf: otherSpaceWindows(of: pid, serverWindows: serverWindows, listed: elements))
 
-        let isBrowser = app.bundleIdentifier.map(BrowserTabs.bundleIDs.contains) ?? false
-        let windows = elements.enumerated().flatMap { index, element -> [WindowItem] in
-            guard element.value(kAXSubroleAttribute) as String? == kAXStandardWindowSubrole else { return [] }
+        let isBrowser = isBrowser(app)
+        let standard = elements.filter { $0.value(kAXSubroleAttribute) as String? == kAXStandardWindowSubrole }
+        if isBrowser, !revealed.contains(pid), let first = standard.first {
+            Tabs.revealTree(of: axApp, window: first)
+            revealed.insert(pid)
+        }
+        let tabsByWindow = standard.map { isBrowser ? Tabs.browserTabs(of: $0) : Tabs.windowTabs(of: $0) }
+        let hiddenTabs = isBrowser ? [] : Self.hiddenTabWindows(standard, tabs: tabsByWindow)
+
+        let windows = zip(standard, tabsByWindow).enumerated().flatMap { index, pair -> [WindowItem] in
+            let (element, tabs) = pair
+            if hiddenTabs.contains(index) { return [] }
             let title: String = element.value(kAXTitleAttribute) ?? ""
             let number = PrivateAPI.windowNumber(element)
             let windowID = number.map { "\(pid)-w\($0)" } ?? "\(pid)-\(index)"
@@ -170,7 +184,6 @@ final class WindowStore {
                 element: element,
                 number: number
             )
-            let tabs = isBrowser ? BrowserTabs.tabs(of: element) : []
             guard !tabs.isEmpty else { return [window] }
             return tabs.enumerated().map { tabIndex, tab in
                 WindowItem(
@@ -187,6 +200,34 @@ final class WindowStore {
             }
         }
         return AppGroup(app: app, name: name, icon: app.icon, windows: windows)
+    }
+
+    private func isBrowser(_ app: NSRunningApplication) -> Bool {
+        let id = app.bundleIdentifier ?? ""
+        if let known = browsers[id] { return known }
+        let result = Tabs.isBrowser(app)
+        browsers[id] = result
+        return result
+    }
+
+    /// Indices of windows that are background tabs of a system tab bar. AX lists only the
+    /// front tab's window, but a scan finds the others once they have been shown. They share
+    /// the front window's frame and belong to no Space; without the Space lookup, a tab's
+    /// title has to do, though Terminal titles its tabs and windows differently.
+    private static func hiddenTabWindows(_ windows: [AXUIElement], tabs: [[Tabs.Tab]]) -> Set<Int> {
+        let bars = zip(windows, tabs).compactMap { window, tabs -> (frame: CGRect, titles: Set<String>)? in
+            guard !tabs.isEmpty, let frame = window.frame else { return nil }
+            return (frame, Set(tabs.map(\.title)))
+        }
+        guard !bars.isEmpty else { return [] }
+        return Set(windows.indices.filter { index in
+            guard tabs[index].isEmpty, let frame = windows[index].frame,
+                  let bar = bars.first(where: { $0.frame == frame }) else { return false }
+            if let number = PrivateAPI.windowNumber(windows[index]), let onSpace = PrivateAPI.isOnSpace(number) {
+                return !onSpace
+            }
+            return bar.titles.contains(windows[index].value(kAXTitleAttribute) ?? "")
+        })
     }
 
     /// Elements for the app's windows that the window server has and AX did not list.

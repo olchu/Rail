@@ -11,6 +11,8 @@ enum PrivateAPI {
     private typealias GetProcessForPID = @convention(c) (pid_t, UnsafeMutablePointer<ProcessSerialNumber>) -> OSStatus
     private typealias SetFrontProcess = @convention(c) (UnsafeMutablePointer<ProcessSerialNumber>, CGWindowID, UInt32) -> CGError
     private typealias PostEventRecord = @convention(c) (UnsafeMutablePointer<ProcessSerialNumber>, UnsafeMutablePointer<UInt8>) -> CGError
+    private typealias MainConnectionID = @convention(c) () -> Int32
+    private typealias CopySpacesForWindows = @convention(c) (Int32, Int32, CFArray) -> Unmanaged<CFArray>?
 
     private static let hiServices = dlopen(
         "/System/Library/Frameworks/ApplicationServices.framework/Frameworks/HIServices.framework/HIServices", RTLD_LAZY)
@@ -20,6 +22,8 @@ enum PrivateAPI {
     private static let getProcessForPID: GetProcessForPID? = symbol("GetProcessForPID", in: hiServices)
     private static let setFrontProcess: SetFrontProcess? = symbol("_SLPSSetFrontProcessWithOptions", in: skyLight)
     private static let postEventRecord: PostEventRecord? = symbol("SLPSPostEventRecordTo", in: skyLight)
+    private static let mainConnectionID: MainConnectionID? = symbol("SLSMainConnectionID", in: skyLight)
+    private static let copySpacesForWindows: CopySpacesForWindows? = symbol("SLSCopySpacesForWindows", in: skyLight)
 
     private static func symbol<T>(_ name: String, in handle: UnsafeMutableRawPointer?) -> T? {
         guard let handle, let pointer = dlsym(handle, name) else { return nil }
@@ -31,6 +35,16 @@ enum PrivateAPI {
         var number: CGWindowID = 0
         guard let getWindow, getWindow(element, &number) == .success, number != 0 else { return nil }
         return number
+    }
+
+    /// Whether the window belongs to some Space. Background tabs of a system tab bar belong to none,
+    /// while windows on other Spaces do. Nil when the private calls are unavailable.
+    static func isOnSpace(_ number: CGWindowID) -> Bool? {
+        guard let mainConnectionID, let copySpacesForWindows else { return nil }
+        let allSpaces: Int32 = 7
+        let spaces = copySpacesForWindows(mainConnectionID(), allSpaces, [NSNumber(value: number)] as CFArray)?
+            .takeRetainedValue() as? [NSNumber]
+        return !(spaces ?? []).isEmpty
     }
 
     /// Finds standard windows of an app by trying element IDs one by one: AX hands out

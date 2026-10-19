@@ -20,6 +20,14 @@ extension AXUIElement {
         return ref as? T
     }
 
+    var frame: CGRect? {
+        guard let position: AXValue = value(kAXPositionAttribute), let size: AXValue = value(kAXSizeAttribute) else { return nil }
+        var origin = CGPoint.zero
+        var extent = CGSize.zero
+        guard AXValueGetValue(position, .cgPoint, &origin), AXValueGetValue(size, .cgSize, &extent) else { return nil }
+        return CGRect(origin: origin, size: extent)
+    }
+
     func set(_ attribute: String, _ value: CFTypeRef) {
         AXUIElementSetAttributeValue(self, attribute as CFString, value)
     }
