@@ -9,6 +9,10 @@ struct SidebarActions {
     let setColor: (Int, Project) -> Void
     let deleteProject: (Project) -> Void
     let removeRule: (WindowRule, Project) -> Void
+    let pin: (WindowItem, Project) -> Void
+    let editPin: (PinnedItem, Project) -> Void
+    let unpin: (PinnedItem, Project) -> Void
+    let openPin: (PinnedItem) -> Void
 }
 
 struct SidebarView: View {

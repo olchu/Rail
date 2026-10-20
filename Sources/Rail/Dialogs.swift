@@ -44,6 +44,37 @@ enum Dialogs {
         )
     }
 
+    /// Name and link of a pin. Apps without tabs or documents do not report what a window shows,
+    /// so the link is the only way back to, say, one chat.
+    static func editPin(_ pin: PinnedItem, isNew: Bool) -> PinnedItem? {
+        let name = NSTextField(string: pin.title)
+        name.placeholderString = pin.appName
+        let link = NSTextField(string: pin.url?.absoluteString ?? "")
+        link.placeholderString = "https://…"
+
+        let isTelegram = pin.appID.localizedCaseInsensitiveContains("telegram")
+        let hint = NSTextField(wrappingLabelWithString: isTelegram
+            ? "Чат: t.me/username, @username или номер телефона +7…. Пустое поле: просто открыть Telegram."
+            : "\(pin.appName) не сообщает, что открыто в окне. Ссылка или путь к файлу откроются в нём по клику. Пустое поле: просто открыть приложение.")
+        hint.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        hint.textColor = .secondaryLabelColor
+
+        let alert = NSAlert()
+        alert.messageText = isNew ? "Закрепить" : "Изменить закреплённое"
+        alert.informativeText = pin.appName
+        alert.addButton(withTitle: isNew ? "Закрепить" : "Сохранить")
+        alert.addButton(withTitle: "Отмена")
+        alert.accessoryView = form([label("Название"), name, label("Ссылка"), link, hint])
+        alert.window.initialFirstResponder = isNew ? link : name
+
+        guard run(alert) == .alertFirstButtonReturn else { return nil }
+        var edited = pin
+        let title = name.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        edited.title = title.isEmpty ? pin.title : title
+        edited.url = PinnedItem.link(link.stringValue, appID: pin.appID)
+        return edited
+    }
+
     static func rename(_ project: Project) -> String? {
         let field = NSTextField(string: project.name)
         let alert = NSAlert()

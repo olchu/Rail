@@ -16,16 +16,8 @@ struct WindowItem: Identifiable {
     let number: CGWindowID?
     /// The tab button to press after raising the window.
     var tab: AXUIElement? = nil
-
-    /// Splits "file.swift — Rail" into a headline and a quieter context line.
-    var titleParts: (primary: String, secondary: String?) {
-        for separator in [" — ", " – "] {
-            if let range = title.range(of: separator) {
-                return (String(title[..<range.lowerBound]), String(title[range.upperBound...]))
-            }
-        }
-        return (title, nil)
-    }
+    /// Page or document shown. Read only for apps with pins, and only for a window's selected tab.
+    var url: URL? = nil
 
     /// Bundle ID, or the app name for the rare app without one.
     var appID: String { app.bundleIdentifier ?? appName }
@@ -40,10 +32,28 @@ struct AppGroup: Identifiable {
     var windows: [WindowItem]
 }
 
+/// A pin with its window, if that is open.
+struct PinnedEntry: Identifiable {
+    var id: UUID { pin.id }
+    let pin: PinnedItem
+    let window: WindowItem?
+    let icon: NSImage?
+}
+
 struct ProjectSection: Identifiable {
     var id: UUID { project.id }
     let project: Project
+    let pins: [PinnedEntry]
     let windows: [WindowItem]
+
+    var openCount: Int { windows.count + pins.count { $0.window != nil } }
+
+    /// One icon per app, pins first.
+    var icons: [NSImage] {
+        var seen = Set<String>()
+        let items = pins.map { ($0.pin.appID, $0.icon) } + windows.map { ($0.appID, $0.app.icon) }
+        return items.compactMap { appID, icon in seen.insert(appID).inserted ? icon : nil }
+    }
 }
 
 struct SidebarLayout {
@@ -72,6 +82,8 @@ final class WindowStore {
     @ObservationIgnored private var browsers: [String: Bool] = [:]
     /// Browsers already asked to build their accessibility tree.
     @ObservationIgnored private var revealed: Set<pid_t> = []
+    /// Icons of pinned apps by bundle ID, for pins whose app is not running.
+    @ObservationIgnored private var appIcons: [String: NSImage] = [:]
 
     init(projects: ProjectStore) {
         self.projects = projects
@@ -79,14 +91,23 @@ final class WindowStore {
 
     var windowCount: Int { Set(apps.flatMap { $0.windows.map(\.windowID) }).count }
 
-    /// Each window lands in the first project with a matching rule; the rest stay grouped by app.
+    /// Pins claim their windows first, so a pinned window stays put even when another project's
+    /// rules match it. Then each window lands in the first project with a matching rule;
+    /// the rest stay grouped by app.
     var layout: SidebarLayout {
         var claimed = Set<String>()
         let all = apps.flatMap(\.windows)
-        let sections = projects.projects.map { project in
+        let pins = projects.projects.map { project in
+            project.pins.map { pin in
+                let window = pin.window(in: all.filter { !claimed.contains($0.id) })
+                if let window { claimed.insert(window.id) }
+                return PinnedEntry(pin: pin, window: window, icon: window?.app.icon ?? appIcon(pin.appID))
+            }
+        }
+        let sections = zip(projects.projects, pins).map { project, pins in
             let windows = all.filter { !claimed.contains($0.id) && project.matches($0) }
             claimed.formUnion(windows.map(\.id))
-            return ProjectSection(project: project, windows: windows)
+            return ProjectSection(project: project, pins: pins, windows: windows)
         }
         let ungrouped = apps.compactMap { group -> AppGroup? in
             var rest = group
@@ -110,15 +131,18 @@ final class WindowStore {
             .filter { $0.activationPolicy == .regular && $0.processIdentifier != me }
             .sorted { ($0.localizedName ?? "").localizedStandardCompare($1.localizedName ?? "") == .orderedAscending }
 
+        let pinnedApps = projects.pinnedAppIDs
         var groups: [AppGroup] = []
         var idle: [NSRunningApplication] = []
         for app in running {
             let pid = app.processIdentifier
-            let group = group(for: app, serverWindows: serverWindows[pid] ?? [], isFrontmost: pid == frontmost)
+            let group = group(for: app, serverWindows: serverWindows[pid] ?? [], isFrontmost: pid == frontmost,
+                              readsURLs: pinnedApps.contains(app.bundleIdentifier ?? ""))
             if group.windows.isEmpty { idle.append(app) } else { groups.append(group) }
         }
         apps = groups
         idleApps = idle
+        projects.refreshPins(from: groups.flatMap(\.windows))
 
         let live = Set(serverWindows.values.joined())
         offSpace = offSpace.filter { live.contains($0.key) }
@@ -139,6 +163,43 @@ final class WindowStore {
         if let tab = window.tab { AXUIElementPerformAction(tab, kAXPressAction as CFString) }
     }
 
+    /// Address of a window or tab to pin, so it can be reopened once closed.
+    func url(of window: WindowItem) -> URL? {
+        if let url = window.url { return url }
+        if isBrowser(window.app) {
+            guard let tab = window.tab else { return Tabs.pageURL(of: window.element) }
+            return Tabs.pageURL(of: window.element, tab: tab)
+        }
+        // A system tab bar shows the document of its front tab only.
+        if let tab = window.tab, tab.value(kAXValueAttribute) as Int? != 1 { return nil }
+        return Self.documentURL(of: window.element, appID: window.appID)
+    }
+
+    /// Opens a closed pin in the app it was pinned from: the page or document if known, else the app.
+    func open(_ pin: PinnedItem) {
+        guard let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: pin.appID) else { return }
+        if let url = pin.url {
+            NSWorkspace.shared.open([url], withApplicationAt: appURL, configuration: NSWorkspace.OpenConfiguration())
+        } else {
+            NSWorkspace.shared.openApplication(at: appURL, configuration: NSWorkspace.OpenConfiguration())
+        }
+    }
+
+    private func appIcon(_ appID: String) -> NSImage? {
+        if let icon = appIcons[appID] { return icon }
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: appID) else { return nil }
+        let icon = NSWorkspace.shared.icon(forFile: url.path)
+        appIcons[appID] = icon
+        return icon
+    }
+
+    /// File or folder of a document window, if the app reports one.
+    private static func documentURL(of window: AXUIElement, appID: String) -> URL? {
+        if appID == Finder.bundleID { return Finder.folderURL(of: window) }
+        guard let path: String = window.value(kAXDocumentAttribute), !path.isEmpty else { return nil }
+        return URL(string: path)
+    }
+
     /// Activates an app with no windows; the reopen event makes most apps open a new one.
     func open(_ app: NSRunningApplication) {
         guard let url = app.bundleURL else {
@@ -148,7 +209,8 @@ final class WindowStore {
         NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration())
     }
 
-    private func group(for app: NSRunningApplication, serverWindows: [CGWindowID], isFrontmost: Bool) -> AppGroup {
+    private func group(for app: NSRunningApplication, serverWindows: [CGWindowID], isFrontmost: Bool,
+                       readsURLs: Bool) -> AppGroup {
         let pid = app.processIdentifier
         let axApp = AXUIElementCreateApplication(pid)
         // A hung app must not freeze the sidebar.
@@ -174,6 +236,7 @@ final class WindowStore {
             let title: String = element.value(kAXTitleAttribute) ?? ""
             let number = PrivateAPI.windowNumber(element)
             let windowID = number.map { "\(pid)-w\($0)" } ?? "\(pid)-\(index)"
+            let url = readsURLs ? (isBrowser ? Tabs.pageURL(of: element) : Self.documentURL(of: element, appID: app.bundleIdentifier ?? "")) : nil
             let window = WindowItem(
                 id: windowID,
                 windowID: windowID,
@@ -182,7 +245,8 @@ final class WindowStore {
                 isMinimized: element.value(kAXMinimizedAttribute) ?? false,
                 isFocused: focused.map { CFEqual($0, element) } ?? false,
                 element: element,
-                number: number
+                number: number,
+                url: url
             )
             guard !tabs.isEmpty else { return [window] }
             return tabs.enumerated().map { tabIndex, tab in
@@ -195,7 +259,8 @@ final class WindowStore {
                     isFocused: window.isFocused && tab.isSelected,
                     element: element,
                     number: number,
-                    tab: tab.element
+                    tab: tab.element,
+                    url: tab.isSelected ? url : nil
                 )
             }
         }

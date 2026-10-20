@@ -64,6 +64,50 @@ enum Tabs {
         app.set("AXEnhancedUserInterface", kCFBooleanTrue)
     }
 
+    /// Address of the page the window shows. Chrome and its kin report it as the window's document;
+    /// otherwise it is on the web area, which only the selected tab has.
+    static func pageURL(of window: AXUIElement) -> URL? {
+        if let document: String = window.value(kAXDocumentAttribute), let url = URL(string: document) {
+            return url
+        }
+        var queue = [window]
+        var visited = 0
+        while !queue.isEmpty, visited < 300 {
+            let element = queue.removeFirst()
+            visited += 1
+            let role: String? = element.value(kAXRoleAttribute)
+            if role == "AXWebArea" {
+                if let url: URL = element.value("AXURL") { return url }
+                return (element.value("AXURL") as String?).flatMap(URL.init(string:))
+            }
+            if let role, role != "AXScrollArea", skippedRoles.contains(role) { continue }
+            let children: [AXUIElement] = element.value(kAXChildrenAttribute) ?? []
+            queue.append(contentsOf: children)
+        }
+        return nil
+    }
+
+    /// Address of any tab. A background tab has no page in the tree, so it is selected
+    /// for a moment, until its page shows up, and the previous tab is selected again.
+    static func pageURL(of window: AXUIElement, tab: AXUIElement) -> URL? {
+        let tabs = browserTabs(of: window)
+        let previous = tabs.first(where: \.isSelected)
+        if let previous, CFEqual(previous.element, tab) { return pageURL(of: window) }
+        let before = pageURL(of: window)
+        AXUIElementPerformAction(tab, kAXPressAction as CFString)
+        defer {
+            if let previous { AXUIElementPerformAction(previous.element, kAXPressAction as CFString) }
+        }
+        let clock = ContinuousClock()
+        let deadline = clock.now + .milliseconds(600)
+        while clock.now < deadline {
+            if let url = pageURL(of: window), url != before { return url }
+            Thread.sleep(forTimeInterval: 0.03)
+        }
+        // Two tabs on the same page look unchanged.
+        return pageURL(of: window)
+    }
+
     private static func tab(_ element: AXUIElement) -> Tab? {
         guard element.value(kAXRoleAttribute) as String? == kAXRadioButtonRole,
               element.value(kAXSubroleAttribute) as String? == "AXTabButton" else { return nil }

@@ -19,12 +19,79 @@ struct WindowRule: Codable, Hashable {
     }
 }
 
+/// A window or tab kept in a project after it closes, with what it takes to open it again.
+struct PinnedItem: Codable, Identifiable, Hashable {
+    var id = UUID()
+    var appID: String
+    var appName: String
+    var title: String
+    /// Page or document to reopen. Without one, reopening just opens the app.
+    var url: URL?
+
+    /// The open window this pin stands for: same address first, since titles drift, then same title.
+    /// A window that cannot tell what it shows, like a chat app's single window, may show anything,
+    /// so a pin with a link leaves it alone and opens the link instead.
+    func window(in windows: [WindowItem]) -> WindowItem? {
+        let own = windows.filter { $0.appID == appID }
+        guard let url else { return own.first { $0.title == title } }
+        if let window = own.first(where: { $0.url == url }) { return window }
+        return own.first { $0.title == title && ($0.url != nil || $0.tab != nil) }
+    }
+
+    /// Reads a link typed by hand: a web address, a file path, or a custom scheme.
+    /// For Telegram also @username, a phone number and t.me links, which it opens as tg:// links.
+    static func link(_ text: String, appID: String) -> URL? {
+        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return nil }
+        if text.hasPrefix("/") || text.hasPrefix("~") {
+            return URL(fileURLWithPath: (text as NSString).expandingTildeInPath)
+        }
+        let isTelegram = appID.localizedCaseInsensitiveContains("telegram")
+        if isTelegram, text.hasPrefix("@") {
+            return telegram("resolve", ["domain": String(text.dropFirst())])
+        }
+        let digits = text.filter(\.isNumber)
+        if isTelegram, text.hasPrefix("+"), digits.count >= 7,
+           text.allSatisfy({ $0.isNumber || " +-()".contains($0) }) {
+            return telegram("resolve", ["phone": digits])
+        }
+        guard let url = URL(string: text.contains(":") ? text : "https://\(text)") else { return nil }
+        if let host = url.host(), ["t.me", "telegram.me"].contains(host) {
+            return telegramLink(path: url.pathComponents.filter { $0 != "/" }) ?? url
+        }
+        return url
+    }
+
+    /// t.me/name, t.me/name/123, t.me/+79991234567 and t.me/+invite as tg:// links.
+    private static func telegramLink(path: [String]) -> URL? {
+        guard let first = path.first else { return nil }
+        if first.hasPrefix("+") {
+            let rest = String(first.dropFirst())
+            return rest.allSatisfy(\.isNumber)
+                ? telegram("resolve", ["phone": rest])
+                : telegram("join", ["invite": rest])
+        }
+        var query = ["domain": first]
+        if path.count > 1 { query["post"] = path[1] }
+        return telegram("resolve", query)
+    }
+
+    private static func telegram(_ action: String, _ query: [String: String]) -> URL? {
+        var components = URLComponents()
+        components.scheme = "tg"
+        components.host = action
+        components.queryItems = query.sorted { $0.key < $1.key }.map { URLQueryItem(name: $0.key, value: $0.value) }
+        return components.url
+    }
+}
+
 struct Project: Codable, Identifiable, Hashable {
     static let colorCount = 8
 
     var id = UUID()
     var name: String
     var rules: [WindowRule]
+    var pins: [PinnedItem] = []
     /// Index into the UI palette.
     var color: Int
 
@@ -39,6 +106,7 @@ struct Project: Codable, Identifiable, Hashable {
         id = try container.decode(UUID.self, forKey: .id)
         name = try container.decode(String.self, forKey: .name)
         rules = try container.decode([WindowRule].self, forKey: .rules)
+        pins = try container.decodeIfPresent([PinnedItem].self, forKey: .pins) ?? []
         // Projects saved before colors existed get a stable one derived from the ID.
         color = try container.decodeIfPresent(Int.self, forKey: .color) ?? Int(id.uuid.0) % Self.colorCount
     }
@@ -94,6 +162,46 @@ final class ProjectStore {
     /// Drops every rule of the project that matches the window.
     func remove(_ window: WindowItem, from project: Project) {
         update(project) { $0.rules.removeAll { $0.matches(window) } }
+    }
+
+    func pin(_ item: PinnedItem, to project: Project) {
+        update(project) { $0.pins.append(item) }
+    }
+
+    func replace(_ item: PinnedItem, in project: Project) {
+        update(project) { project in
+            guard let index = project.pins.firstIndex(where: { $0.id == item.id }) else { return }
+            project.pins[index] = item
+        }
+    }
+
+    func unpin(_ item: PinnedItem, from project: Project) {
+        update(project) { $0.pins.removeAll { $0.id == item.id } }
+    }
+
+    /// Apps with pins, whose windows need their addresses read on refresh.
+    var pinnedAppIDs: Set<String> {
+        Set(projects.flatMap { $0.pins.map(\.appID) })
+    }
+
+    /// Keeps pins current from their open windows: the title follows the page,
+    /// and a pin made without an address picks it up from its window.
+    func refreshPins(from windows: [WindowItem]) {
+        var changed = false
+        for p in projects.indices {
+            for i in projects[p].pins.indices {
+                let pin = projects[p].pins[i]
+                guard let window = pin.window(in: windows) else { continue }
+                if let url = pin.url, window.url == url, window.title != pin.title {
+                    projects[p].pins[i].title = window.title
+                    changed = true
+                } else if pin.url == nil, let url = window.url {
+                    projects[p].pins[i].url = url
+                    changed = true
+                }
+            }
+        }
+        if changed { save() }
     }
 
     private func leastUsedColor() -> Int {

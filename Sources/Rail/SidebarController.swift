@@ -169,6 +169,27 @@ final class SidebarController {
             },
             removeRule: { [weak self] rule, project in
                 self?.store.projects.remove(rule, from: project)
+            },
+            pin: { [weak self] window, project in
+                guard let self else { return }
+                var pin = PinnedItem(appID: window.appID, appName: window.appName,
+                                     title: window.title, url: store.url(of: window))
+                if pin.url == nil {
+                    guard let edited = holdingOpen({ Dialogs.editPin(pin, isNew: true) }) else { return }
+                    pin = edited
+                }
+                store.projects.pin(pin, to: project)
+            },
+            editPin: { [weak self] pin, project in
+                guard let self, let edited = holdingOpen({ Dialogs.editPin(pin, isNew: false) }) else { return }
+                store.projects.replace(edited, in: project)
+            },
+            unpin: { [weak self] pin, project in
+                self?.store.projects.unpin(pin, from: project)
+            },
+            openPin: { [weak self] pin in
+                self?.store.open(pin)
+                self?.hide()
             }
         )
     }

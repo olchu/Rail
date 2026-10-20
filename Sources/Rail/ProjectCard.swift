@@ -47,10 +47,10 @@ struct ProjectCard: View {
                     .lineLimit(1)
                 Spacer(minLength: 4)
                 if isCollapsed {
-                    AppIconStack(windows: section.windows)
+                    AppIconStack(icons: section.icons)
                         .transition(.opacity.combined(with: .scale(scale: 0.8, anchor: .trailing)))
-                } else if !section.windows.isEmpty {
-                    Text("\(section.windows.count)")
+                } else if section.openCount > 0 {
+                    Text("\(section.openCount)")
                         .font(.system(size: 11, weight: .semibold).monospacedDigit())
                         .foregroundStyle(color)
                         .transition(.opacity)
@@ -90,7 +90,25 @@ struct ProjectCard: View {
     // MARK: Rows
 
     @ViewBuilder private var rows: some View {
-        if section.windows.isEmpty {
+        ForEach(section.pins) { entry in
+            Group {
+                if let window = entry.window {
+                    WindowRow(window: window, tint: color, showsIcon: true, isPinned: true) {
+                        actions.select(window)
+                    }
+                } else {
+                    WindowRow(closedPin: entry.pin, icon: entry.icon, tint: color) {
+                        actions.openPin(entry.pin)
+                    }
+                    .help("Открыть в \(entry.pin.appName)")
+                }
+            }
+            .contextMenu {
+                Button("Изменить…") { actions.editPin(entry.pin, project) }
+                Button("Открепить") { actions.unpin(entry.pin, project) }
+            }
+        }
+        if section.windows.isEmpty && section.pins.isEmpty {
             Text("Нет открытых окон")
                 .font(.system(size: 11))
                 .foregroundStyle(.tertiary)
@@ -102,6 +120,7 @@ struct ProjectCard: View {
                 actions.select(window)
             }
             .contextMenu {
+                Button("Закрепить") { actions.pin(window, project) }
                 Button("Добавить в проект…") { actions.addToProject(window) }
                 Button("Убрать из «\(project.name)»") { actions.removeFromProject(window, project) }
             }
@@ -126,15 +145,7 @@ private struct Monogram: View {
 
 /// Overlapping icons of the apps in a collapsed project.
 private struct AppIconStack: View {
-    let windows: [WindowItem]
-
-    private var icons: [NSImage] {
-        var seen = Set<pid_t>()
-        return windows.compactMap { window in
-            guard seen.insert(window.app.processIdentifier).inserted else { return nil }
-            return window.app.icon
-        }
-    }
+    let icons: [NSImage]
 
     var body: some View {
         HStack(spacing: -6) {
