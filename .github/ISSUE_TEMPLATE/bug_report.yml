@@ -1,0 +1,42 @@
+name: Bug report
+description: A window, tab or pin that Rail shows or opens wrong
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what Rail did instead.
+    validations:
+      required: true
+  - type: input
+    id: app
+    attributes:
+      label: App and version
+      description: The app whose window or tab is affected, for example "Google Chrome 141" or "Slack 4.46".
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      placeholder: "26.1"
+    validations:
+      required: true
+  - type: input
+    id: rail
+    attributes:
+      label: Rail version
+      description: From the release name, or the commit if you built from source.
+    validations:
+      required: true
+  - type: dropdown
+    id: space
+    attributes:
+      label: Where the window was
+      options:
+        - Current Space
+        - Another Space
+        - Full screen
+        - Minimized
+        - Not sure

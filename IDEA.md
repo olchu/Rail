@@ -15,7 +15,7 @@
 ## Тех. заметки
 - `NSPanel` non-activating, поверх всех окон
 - Список окон: Accessibility API (`AXUIElement`) + `CGWindowListCopyWindowInfo`; окна с других Spaces через приватные `_AXUIElementCreateWithRemoteToken` / `_SLPSSetFrontProcessWithOptions` (как в AltTab), см. `PrivateAPI.swift`
-- Нужны разрешения: Accessibility, Screen Recording (для заголовков окон и превью)
+- Нужно одно разрешение, Accessibility: заголовки окон и вкладок приходят из AX, а номера окон и владельцы из `CGWindowListCopyWindowInfo` не требуют Screen Recording
 
 ## Статус
 - [x] v0.1: панель у левого края, список окон по приложениям, клик выводит окно вперёд
