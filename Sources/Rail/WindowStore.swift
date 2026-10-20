@@ -163,8 +163,18 @@ final class WindowStore {
         if let tab = window.tab { AXUIElementPerformAction(tab, kAXPressAction as CFString) }
     }
 
+    /// A pin for a window or tab. In Slack it is the open thread, if any, else the channel.
+    func pin(for window: WindowItem) -> PinnedItem {
+        let url = url(of: window)
+        let title = url.map(Slack.isThread) == true
+            ? "Тред · \(Slack.channelName(fromTitle: window.title))"
+            : window.title
+        return PinnedItem(appID: window.appID, appName: window.appName, title: title, url: url)
+    }
+
     /// Address of a window or tab to pin, so it can be reopened once closed.
-    func url(of window: WindowItem) -> URL? {
+    private func url(of window: WindowItem) -> URL? {
+        if window.appID == Slack.bundleID { return Slack.location(of: window.element, includingThread: true) }
         if let url = window.url { return url }
         if isBrowser(window.app) {
             guard let tab = window.tab else { return Tabs.pageURL(of: window.element) }
@@ -196,6 +206,7 @@ final class WindowStore {
     /// File or folder of a document window, if the app reports one.
     private static func documentURL(of window: AXUIElement, appID: String) -> URL? {
         if appID == Finder.bundleID { return Finder.folderURL(of: window) }
+        if appID == Slack.bundleID { return Slack.location(of: window, includingThread: false) }
         guard let path: String = window.value(kAXDocumentAttribute), !path.isEmpty else { return nil }
         return URL(string: path)
     }

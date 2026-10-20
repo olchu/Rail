@@ -172,8 +172,7 @@ final class SidebarController {
             },
             pin: { [weak self] window, project in
                 guard let self else { return }
-                var pin = PinnedItem(appID: window.appID, appName: window.appName,
-                                     title: window.title, url: store.url(of: window))
+                var pin = store.pin(for: window)
                 if pin.url == nil {
                     guard let edited = holdingOpen({ Dialogs.editPin(pin, isNew: true) }) else { return }
                     pin = edited

@@ -52,10 +52,15 @@ enum Dialogs {
         let link = NSTextField(string: pin.url?.absoluteString ?? "")
         link.placeholderString = "https://…"
 
-        let isTelegram = pin.appID.localizedCaseInsensitiveContains("telegram")
-        let hint = NSTextField(wrappingLabelWithString: isTelegram
-            ? "Чат: t.me/username, @username или номер телефона +7…. Пустое поле: просто открыть Telegram."
-            : "\(pin.appName) не сообщает, что открыто в окне. Ссылка или путь к файлу откроются в нём по клику. Пустое поле: просто открыть приложение.")
+        let hintText = switch pin.appID {
+        case let id where id.localizedCaseInsensitiveContains("telegram"):
+            "Чат: t.me/username, @username или номер телефона +7…. Пустое поле: просто открыть Telegram."
+        case Slack.bundleID:
+            "Тред или сообщение: ссылка из «Copy link». Пустое поле: просто открыть Slack."
+        default:
+            "\(pin.appName) не сообщает, что открыто в окне. Ссылка или путь к файлу откроются в нём по клику. Пустое поле: просто открыть приложение."
+        }
+        let hint = NSTextField(wrappingLabelWithString: hintText)
         hint.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         hint.textColor = .secondaryLabelColor
 

@@ -35,10 +35,13 @@ struct PinnedItem: Codable, Identifiable, Hashable {
         let own = windows.filter { $0.appID == appID }
         guard let url else { return own.first { $0.title == title } }
         if let window = own.first(where: { $0.url == url }) { return window }
+        // A Slack thread opens beside its channel; the window's title names only the channel.
+        if Slack.isThread(url) { return nil }
         return own.first { $0.title == title && ($0.url != nil || $0.tab != nil) }
     }
 
     /// Reads a link typed by hand: a web address, a file path, or a custom scheme.
+    /// Slack message links become slack:// links to their thread.
     /// For Telegram also @username, a phone number and t.me links, which it opens as tg:// links.
     static func link(_ text: String, appID: String) -> URL? {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -58,6 +61,9 @@ struct PinnedItem: Codable, Identifiable, Hashable {
         guard let url = URL(string: text.contains(":") ? text : "https://\(text)") else { return nil }
         if let host = url.host(), ["t.me", "telegram.me"].contains(host) {
             return telegramLink(path: url.pathComponents.filter { $0 != "/" }) ?? url
+        }
+        if url.host()?.hasSuffix("slack.com") == true, url.path().contains("/archives/") {
+            return Slack.link(fromPermalink: url) ?? url
         }
         return url
     }
@@ -186,10 +192,16 @@ final class ProjectStore {
 
     /// Keeps pins current from their open windows: the title follows the page,
     /// and a pin made without an address picks it up from its window.
+    /// Links saved before Rail could convert them, like Slack message links, get their working form.
     func refreshPins(from windows: [WindowItem]) {
         var changed = false
         for p in projects.indices {
             for i in projects[p].pins.indices {
+                if let url = projects[p].pins[i].url,
+                   let link = PinnedItem.link(url.absoluteString, appID: projects[p].pins[i].appID), link != url {
+                    projects[p].pins[i].url = link
+                    changed = true
+                }
                 let pin = projects[p].pins[i]
                 guard let window = pin.window(in: windows) else { continue }
                 if let url = pin.url, window.url == url, window.title != pin.title {
